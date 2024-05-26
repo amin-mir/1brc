@@ -1,45 +1,119 @@
 use std::collections::HashMap;
 use std::fs::File;
-use std::io::{BufRead, BufReader};
+use std::io::{self, BufRead, BufReader, Seek, SeekFrom, Write};
 use std::num::ParseFloatError;
+use std::ops::Range;
 use std::time::Instant;
 
-fn main() {
-    let file = File::open("measurements.txt").unwrap();
-    let mut buf_reader = BufReader::new(file);
-    let mut measurements = HashMap::new();
+const NUM_THREADS: u64 = 10;
+const FILE_PATH: &str = "measurements.txt";
 
-    // TODO: check rqbit stats reporting.
-    let mut processed = 0;
-    let mut last_processed = 0;
-    let mut ts = Instant::now();
+fn main() {
+    let file = File::open(FILE_PATH).unwrap();
+    let file_size = file.metadata().unwrap().len();
+    let chunk_size = file_size / NUM_THREADS;
+
+    let mut buf_reader = BufReader::new(file);
+    let mut i = 0;
+    let mut indices = vec![0];
+    let mut buffer = Vec::with_capacity(1);
     loop {
-        let mut line = String::new();
-        let n = buf_reader.read_line(&mut line).unwrap();
-        if n == 0 {
+        // Check if this is the last bucket.
+        if i + chunk_size >= file_size {
+            indices.push(file_size);
             break;
         }
 
-        process_record(&line, &mut measurements).unwrap();
-        line.clear();
+        i = buf_reader
+            .seek(SeekFrom::Current(chunk_size as i64 - 1))
+            .unwrap();
 
-        processed += 1;
-        if processed % 1_000_000 == 0 {
-            let ops_per_ms = (processed - last_processed) / ts.elapsed().as_millis();
-            println!("op/s: {}", ops_per_ms * 1000);
+        let n = buf_reader.read_until(b'\n', &mut buffer).unwrap();
+        assert!(n != 0);
 
-            ts = Instant::now();
-            last_processed = processed;
+        // Since we're seeking by (chunk_size - 1), we could end up right on
+        // a '\n' or in the middle of a record. So we try to advance i and
+        // place it right at the beginning of the record.
+        i += n as u64;
+        indices.push(i);
+    }
+
+    let buckets: Vec<Range<u64>> = indices.windows(2).map(|w| (w[0]..w[1])).collect();
+    println!("{:?}", buckets);
+
+    let mut handles = Vec::with_capacity(buckets.len());
+    for bucket in buckets.into_iter() {
+        let h = std::thread::spawn(move || {
+            let file = File::open(FILE_PATH).unwrap();
+            let mut buf_reader = BufReader::new(file);
+
+            let mut pos = bucket.start;
+            buf_reader.seek(SeekFrom::Start(pos)).unwrap();
+
+            let mut measurements = HashMap::new();
+            let mut line = String::new();
+
+            // TODO: check rqbit stats reporting.
+            // How to process the op/s for a workload that is distributed
+            // across several threads.
+            loop {
+                let n = buf_reader.read_line(&mut line).unwrap();
+                pos += n as u64;
+                if pos == bucket.end {
+                    println!("pos = {}, bucket end = {}", pos, bucket.end);
+                    assert!(pos == bucket.end);
+                    break;
+                }
+
+                process_record(&line, &mut measurements).unwrap();
+                line.clear();
+            }
+
+            measurements
+        });
+        handles.push(h);
+    }
+
+    // Use the map from the first thread to gather the results from all threads.
+    let mut results = handles.pop().unwrap().join().unwrap();
+    let now = Instant::now();
+    for h in handles {
+        let measure = h.join().unwrap();
+        for (c, m) in measure.into_iter() {
+            match results.get_mut(&c) {
+                Some(total) => {
+                    total.sum += m.sum;
+                    total.count += m.count;
+                    total.min = f32::min(total.min, m.min);
+                    total.max = f32::max(total.max, m.max);
+                }
+                None => {
+                    results.insert(c, m);
+                }
+            }
         }
     }
+    println!("final map has a len of {}", results.len());
 
-    let mut results: Vec<(String, Measurement)> = Vec::new();
-    results.extend(measurements.into_iter());
-
+    let mut results: Vec<(String, Measurement)> = results.into_iter().collect();
     results.sort_by(|a, b| a.0.cmp(&b.0));
-    for m in results.iter().take(30) {
-        println!("city: {}, measurement: {:?}", m.0, m.1);
+    let dur = now.elapsed().as_millis();
+    println!("joining and sorting took {}ms", dur);
+
+    let stdout = io::stdout();
+    let mut handle = stdout.lock();
+    handle.write_all(b"{").unwrap();
+
+    for (cname, measure) in results {
+        let avg = measure.sum / measure.count as f64;
+        write!(
+            handle,
+            "{}={:.1}/{:.1}/{:.1}, ",
+            cname, measure.min, avg, measure.max
+        )
+        .unwrap();
     }
+    handle.write_all(b"}").unwrap();
 }
 
 fn process_record(
@@ -67,7 +141,7 @@ fn process_record(
         if m.max < sample {
             m.max = sample;
         }
-        m.sum += sample;
+        m.sum += sample as f64;
         m.count += 1;
         return Ok(());
     }
@@ -75,7 +149,7 @@ fn process_record(
     let m = Measurement {
         min: sample,
         max: sample,
-        sum: sample,
+        sum: sample as f64,
         count: 1,
     };
     measurements.insert(city.to_string(), m);
@@ -87,6 +161,6 @@ fn process_record(
 struct Measurement {
     min: f32,
     max: f32,
-    sum: f32,
+    sum: f64,
     count: usize,
 }
