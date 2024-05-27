@@ -5,13 +5,15 @@ use std::num::ParseFloatError;
 use std::ops::Range;
 use std::time::Instant;
 
-const NUM_THREADS: u64 = 10;
 const FILE_PATH: &str = "measurements.txt";
 
 fn main() {
+    let num_threads = num_cpus::get();
+    println!("using {num_threads} threads");
+
     let file = File::open(FILE_PATH).unwrap();
     let file_size = file.metadata().unwrap().len();
-    let chunk_size = file_size / NUM_THREADS;
+    let chunk_size = file_size / num_threads as u64;
 
     let mut buf_reader = BufReader::new(file);
     let mut i = 0;
