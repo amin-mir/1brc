@@ -1,10 +1,10 @@
-use std::collections::HashMap;
 use std::fs::File;
 use std::io::{self, Write};
 use std::ops::Range;
 use std::sync::Arc;
 
 use memmap2::MmapOptions;
+use rustc_hash::FxHashMap as HashMap;
 
 const FILE_PATH: &str = "measurements.txt";
 
@@ -45,7 +45,7 @@ fn main() {
         let mmap = Arc::clone(&mmap);
         let h = std::thread::spawn(move || {
             let chunk = &mmap[bucket.start..bucket.end];
-            let mut measurements = HashMap::new();
+            let mut measurements = HashMap::default();
             let mut start = 0;
             let mut i = 0;
 
