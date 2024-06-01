@@ -17,11 +17,7 @@ struct Measurement {
 }
 
 fn main() {
-    let cores = std::thread::available_parallelism().unwrap();
-    println!("core: {cores}");
-
-    let num_threads = num_cpus::get();
-    println!("using {num_threads} threads");
+    let num_threads = std::thread::available_parallelism().unwrap();
 
     let file = File::open(FILE_PATH).unwrap();
     let mmap = unsafe { MmapOptions::new().map(&file).unwrap() };
@@ -42,14 +38,7 @@ fn main() {
         i += chunk_size;
     }
 
-    let buckets: Vec<Range<usize>> = indices
-        .windows(2)
-        .map(|w| {
-            print!("({}..{}) ", w[0], w[1]);
-            w[0]..w[1]
-        })
-        .collect();
-    println!("");
+    let buckets: Vec<Range<usize>> = indices.windows(2).map(|w| w[0]..w[1]).collect();
 
     let mut handles = Vec::with_capacity(buckets.len());
     for bucket in buckets.into_iter() {
@@ -98,7 +87,6 @@ fn main() {
             }
         }
     }
-    println!("final map has a len of {}", results.len());
 
     let mut results: Vec<(Vec<u8>, Measurement)> = results.into_iter().collect();
     results.sort_unstable_by(|a, b| a.0.cmp(&b.0));
